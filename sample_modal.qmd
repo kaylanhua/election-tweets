@@ -1,0 +1,83 @@
+
+###### FULL DATA ######
+# load data
+rawData <- read_csv("Downloads/Truth_Seeker_Model_Dataset.csv")
+
+# variable for actual classifications
+rawData <- rawData %>% 
+  mutate(outcome = case_when(
+    target == "TRUE" & `3_label_majority_answer` == "Agree" ~ "real", 
+    target == "FALSE" & `3_label_majority_answer` == "Disagree" ~ "real", 
+    target == "TRUE" & `3_label_majority_answer` == "Disagree" ~ "fake", 
+    target == "FALSE" & `3_label_majority_answer` == "Agree" ~ "fake",
+    TRUE ~ NA_character_
+  )) %>%
+filter(!is.na(outcome)) 
+
+topics_list <- strsplit(as.character(rawData$tweet), "nn")
+topics_list <- lapply(topics_list, function(topic) {
+  topic <- gsub("ˆ.* -", "", topic)
+})
+topics_unique <- sort(unique(unlist(topics_list)))
+
+# dummy matrix
+topics_dummies <- t(sapply(1:nrow(rawData), function(i) {
+  topics_unique %in% topics_list[[i]]
+}))
+dimnames(topics_dummies) <- list(res_symbol = rownames(rawData), topic = topics_unique)
+
+# just saving some memory
+rm(topics_list)
+
+# labelling for ease
+texts <- rawData$tweet
+names(texts) <- rawData$...1
+
+# building corpus
+files <- VectorSource(texts)
+corpus <- Corpus(files, readerControl = list(reader = files$defaultReader,
+                                             language = "en"))
+
+# corpus cleaning
+corpus.clean <- tm_map(corpus, content_transformer(stripWhitespace))
+corpus.clean <- tm_map(corpus.clean, content_transformer(removeNumbers))
+corpus.clean <- tm_map(corpus.clean, content_transformer(removePunctuation))
+corpus.clean <- tm_map(corpus.clean, stemDocument)
+
+dtm_slam <- DocumentTermMatrix(corpus.clean, control = 
+                                 list(stopwords = stopwords("english"), 
+                                      tolower = TRUE, wordLengths = c(3, Inf)))
+
+# row names
+rownames(dtm_slam) <- rawData$...1
+
+# dropping terms that occur in <3 documents
+drop <- which(col_sums(dtm_slam > 0) < 3)
+dtm_slam <- dtm_slam[, -drop]
+
+# converting to sparse matrix for memory/performance
+dtm <- sparseMatrix(i = dtm_slam$i, j = dtm_slam$j, x = dtm_slam$v, 
+                    dims = c(nrow(dtm_slam), ncol(dtm_slam)))
+dimnames(dtm) <- dimnames(dtm_slam)
+
+# normalizing (preferred)
+dtm_norm <- Diagonal(x = 1 / rowSums(dtm)) %*% dtm
+rownames(dtm_norm) <- rawData$...1
+
+# just saving some memory
+rm(files, corpus, corpus.clean, dtm_slam)
+
+dfm <- as.dfm(dtm)
+
+# create tf-idf matrix (alternative)
+tfidf <- dfm_tfidf(dfm)
+tfidf_norm <- dfm_weight(tfidf, "prop", force = TRUE) # normalized version
+rownames(tfidf) <- rawData$...1
+
+# just saving some memory
+rm(dfm, dtm, topics_dummies, tfidf, topics_unique, texts, content)
+
+# summary statistics
+print("DTM:")
+print(paste("Mean entry:", mean(as.matrix(dtm_norm))))
+print(paste("Dimensions: ", dim(dtm_norm)))
